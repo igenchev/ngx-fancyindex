@@ -41,6 +41,7 @@
 typedef struct {
     ngx_flag_t enable;       /**< Module is enabled. */
     ngx_uint_t default_sort; /**< Default sort criterion. */
+    ngx_uint_t dateformat;   /**< Format type for file mtime display */
     ngx_flag_t localtime;    /**< File mtime dates are sent in local time. */
     ngx_flag_t exact_size;   /**< Sizes are sent always in bytes. */
     ngx_uint_t name_length;  /**< Maximum length of file names in bytes. */
@@ -69,8 +70,17 @@ static ngx_conf_enum_t ngx_http_fancyindex_sort_criteria[] = {
     { ngx_null_string, 0 }
 };
 
+#define NGX_HTTP_FANCYINDEX_DTFORMAT_DEFAULT    0
+#define NGX_HTTP_FANCYINDEX_DTFORMAT_ISO        1
+
+static ngx_conf_enum_t ngx_http_fancyindex_dtformat[] = {
+    { ngx_string("default"), NGX_HTTP_FANCYINDEX_DTFORMAT_DEFAULT },
+    { ngx_string("iso"), NGX_HTTP_FANCYINDEX_DTFORMAT_ISO },
+    { ngx_null_string, 0 }
+};
 
 #define NGX_HTTP_FANCYINDEX_PREALLOCATE  50
+
 
 
 /**
@@ -174,6 +184,13 @@ static ngx_command_t  ngx_http_fancyindex_commands[] = {
       offsetof(ngx_http_fancyindex_loc_conf_t, default_sort),
       &ngx_http_fancyindex_sort_criteria },
 
+    { ngx_string("fancyindex_date_format"),
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
+      ngx_conf_set_enum_slot,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      offsetof(ngx_http_fancyindex_loc_conf_t, dateformat),
+      &ngx_http_fancyindex_dtformat },
+
     { ngx_string("fancyindex_localtime"),
       NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_FLAG,
       ngx_conf_set_flag_slot,
@@ -264,6 +281,62 @@ static const ngx_str_t css_href_pre =
 static const ngx_str_t css_href_post =
     ngx_string("\" type=\"text/css\"/>\n");
 
+static char *
+ngx_fancyindex_dtformat(ngx_tm_t tm, ngx_int_t off, ngx_flag_t l, ngx_uint_t t, char *last)
+{
+    /*
+      * The ngx_fancyindex_dtformat() function will return a formatted
+      * string, depending on the setting from the configuration file.
+      */
+
+    static char *months[] = {
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+        "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    };
+
+    switch (t) {
+        case NGX_HTTP_FANCYINDEX_DTFORMAT_DEFAULT:
+            last = ngx_sprintf(last, "</td><td>%02d-%s-%d %02d:%02d</td></tr>",
+                                  tm.ngx_tm_mday,
+                                  months[tm.ngx_tm_mon - 1],
+                                  tm.ngx_tm_year,
+                                  tm.ngx_tm_hour,
+                                  tm.ngx_tm_min);
+            break;
+        case NGX_HTTP_FANCYINDEX_DTFORMAT_ISO:
+            last = ngx_sprintf(last, "</td><td>%04d-%02d-%02dT%02d:%02d:%02d%s</td></tr>",
+                                  tm.ngx_tm_year,
+                                  tm.ngx_tm_mon,
+                                  tm.ngx_tm_mday,
+                                  tm.ngx_tm_hour,
+                                  tm.ngx_tm_min,
+                                  tm.ngx_tm_sec,
+                                  l ? "Z" : "_88:88"); // XXX FIXME need offset string
+            break;
+    }
+    return last;
+}
+
+static size_t
+ngx_fancyindex_dtformat_len(ngx_uint_t t)
+{
+    /*
+      * The ngx_fancyindex_dtformat_len() function will return the
+      * expected length of a formatted string, depending on configuration
+      */
+    size_t len;
+    switch (t) {
+        case NGX_HTTP_FANCYINDEX_DTFORMAT_DEFAULT:
+            len = ngx_sizeof_ssz("</td><td>22-Mar-2000 22:22</td></tr>");
+            break;
+        case NGX_HTTP_FANCYINDEX_DTFORMAT_ISO:
+            len = ngx_sizeof_ssz("</td><td>2002-02-02T22:22:22+00:00</td></tr>");
+            break;
+        default:
+            len = 0;
+    }
+    return len + 2;
+}
 
 static uintptr_t
 ngx_fancyindex_escape_uri(u_char *dst, u_char *src, size_t size)
@@ -420,11 +493,6 @@ make_content_buf(
     ngx_str_t    path;
     ngx_dir_t    dir;
     ngx_buf_t   *b;
-
-    static char *months[] = {
-        "Jan", "Feb", "Mar", "Apr", "May", "Jun",
-        "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-    };
 
     /*
      * NGX_DIR_MASK_LEN is lesser than NGX_HTTP_FANCYINDEX_PREALLOCATE
@@ -614,9 +682,7 @@ make_content_buf(
             + alcf->name_length + ngx_sizeof_ssz("&gt;")
             + ngx_sizeof_ssz("</a></td><td>")
             + 20 /* File size */
-            + ngx_sizeof_ssz("</td><td>")
-            + ngx_sizeof_ssz(" 28-Sep-1970 12:00 ")
-            + ngx_sizeof_ssz("</td></tr>\n")
+            + ngx_fancyindex_dtformat_len(alcf->dateformat) /* expected size of formatted date */
             + 2 /* CR LF */
             ;
     }
@@ -843,13 +909,7 @@ make_content_buf(
 
         ngx_gmtime(entry[i].mtime + tp->gmtoff * 60 * alcf->localtime, &tm);
 
-        b->last = ngx_sprintf(b->last, "</td><td>%02d-%s-%d %02d:%02d</td></tr>",
-                              tm.ngx_tm_mday,
-                              months[tm.ngx_tm_mon - 1],
-                              tm.ngx_tm_year,
-                              tm.ngx_tm_hour,
-                              tm.ngx_tm_min);
-
+        b->last = ngx_fancyindex_dtformat(tm, tp->gmtoff, alcf->localtime, alcf->dateformat, b->last);
 
         *b->last++ = CR;
         *b->last++ = LF;
@@ -1178,6 +1238,7 @@ ngx_http_fancyindex_create_loc_conf(ngx_conf_t *cf)
      */
     conf->enable       = NGX_CONF_UNSET;
     conf->default_sort = NGX_CONF_UNSET_UINT;
+    conf->dateformat   = NGX_CONF_UNSET_UINT;
     conf->localtime    = NGX_CONF_UNSET;
     conf->name_length  = NGX_CONF_UNSET_UINT;
     conf->exact_size   = NGX_CONF_UNSET;
@@ -1195,6 +1256,7 @@ ngx_http_fancyindex_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
 
     ngx_conf_merge_value(conf->enable, prev->enable, 0);
     ngx_conf_merge_uint_value(conf->default_sort, prev->default_sort, NGX_HTTP_FANCYINDEX_SORT_CRITERION_NAME);
+    ngx_conf_merge_uint_value(conf->dateformat, prev->dateformat, NGX_HTTP_FANCYINDEX_DTFORMAT_DEFAULT);
     ngx_conf_merge_value(conf->localtime, prev->localtime, 0);
     ngx_conf_merge_value(conf->exact_size, prev->exact_size, 1);
     ngx_conf_merge_uint_value(conf->name_length, prev->name_length, 50);
