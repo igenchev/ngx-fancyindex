@@ -281,8 +281,8 @@ static const ngx_str_t css_href_pre =
 static const ngx_str_t css_href_post =
     ngx_string("\" type=\"text/css\"/>\n");
 
-static char *
-ngx_fancyindex_dtformat(ngx_tm_t tm, ngx_int_t off, ngx_flag_t l, ngx_uint_t t, char *last)
+static u_char *
+ngx_fancyindex_dtformat(ngx_tm_t tm, ngx_int_t off, ngx_flag_t l, ngx_uint_t t, u_char *last)
 {
     /*
       * The ngx_fancyindex_dtformat() function will return a formatted
